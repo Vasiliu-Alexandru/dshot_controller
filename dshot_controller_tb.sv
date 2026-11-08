@@ -2,20 +2,23 @@
 // or browse Examples
 `timescale 1ns / 1ps
 module dshot_controller_tb();
+	import dshot_pkg::*;
 
 	logic rst_n;
 	logic clk;
 	wire dshot_io;
 	logic tx_start;
+	dshot_speed_t dshot_speed;
+	
 	initial begin
-
+		dshot_speed = DSHOT_300;
 		rst_n = 1'b0;
 		clk = 1'b0;
 		tx_start = 1;
-      #10;
-      rst_n = 1'b1;
-      #1000000;
-      $stop;
+		#10;
+		rst_n = 1'b1;
+		#1000000;
+		$stop;
 	end
 	
 	always begin
@@ -27,6 +30,7 @@ module dshot_controller_tb();
 	) dut (
 		.clk (clk),
 		.rst_n(rst_n),
+		.dshot_speed(dshot_speed),
 		.tx_start(tx_start),
 		.throttle(11'b10101010101),
 		.req_telemetry(),
