@@ -31,7 +31,9 @@ module dshot_controller #(
     // Telemetry Receive Interface
     output logic [15:0] rx_data,
     output logic        rx_valid,
-    output logic        busy
+    output logic        busy,
+	output logic rx_crc_err, 
+	output logic rx_timeout
 );
 	typedef enum logic [2:0] {
 		GET_DSHOT_SPEED = 3'b000,
@@ -43,6 +45,7 @@ module dshot_controller #(
 	} fsm_state_t;
 	
 
+	localparam int RX_TIMEOUT_CYCLES = (longint'(CLK_FREQ_HZ) * 60) / 1_000_000;
 
 	logic dshot_out_ff, dshot_out_nxt;
 	logic dshot_oe_ff, dshot_oe_nxt;
@@ -57,7 +60,11 @@ module dshot_controller #(
 	logic rx_prev_ff, rx_prev_nxt;
 	logic [15:0] rx_data_ff, rx_data_nxt;
 	logic rx_valid_ff, rx_valid_nxt;
+	logic rx_crc_err_ff, rx_crc_err_nxt, rx_timeout_ff, rx_timeout_nxt;
+	assign rx_crc_err = rx_crc_err_ff;
+	assign rx_timeout = rx_timeout_ff;
 
+	
 	assign rx_data  = rx_data_ff;
 	assign rx_valid = rx_valid_ff;
 	
@@ -98,7 +105,7 @@ module dshot_controller #(
 	endfunction
 	
 	assign dshot_io = dshot_oe_ff ? (dshot_out_ff ^ bidirectional_en_ff) : 1'bz;
-	assign busy = (state_ff == TRANSMIT);
+	assign busy = (state_ff != IDLE);
 	
 	function automatic int bit_cycles(dshot_speed_t s);
 		case (s)
@@ -110,7 +117,7 @@ module dshot_controller #(
 	endfunction
 	
 	function automatic int rx_bit_cycles(dshot_speed_t s);
-		return (bit_cycles(dshot_speed) * 4) / 5; // 1.25x faster baud rate (4/5 period)
+		return (bit_cycles(s) * 4) / 5; // 1.25x faster baud rate (4/5 period)
 	endfunction
 	
 	
@@ -141,6 +148,8 @@ module dshot_controller #(
 			rx_data_ff  <= '0;
 			rx_valid_ff <= 1'b0;
 			rx_bit_idx_ff <= '0;
+			rx_crc_err_ff <= 1'b0;
+			rx_timeout_ff <= 1'b0;
 
 		end else begin
 			dshot_out_ff <= dshot_out_nxt;
@@ -162,6 +171,8 @@ module dshot_controller #(
 			rx_valid_ff <= rx_valid_nxt;
 			rx_bit_idx_ff <= rx_bit_idx_nxt;
 			bidirectional_en_ff <= bidirectional_en_nxt;
+			rx_crc_err_ff <= rx_crc_err_nxt;
+			rx_timeout_ff <= rx_timeout_nxt;
 		end
 	end
 	
@@ -182,6 +193,8 @@ module dshot_controller #(
 		rx_prev_nxt = rx_prev_ff;
 		rx_data_nxt = rx_data_ff;
 		rx_valid_nxt = 1'b0;
+		rx_crc_err_nxt = 1'b0;
+		rx_timeout_nxt = 1'b0;
 		
 		case(state_ff)
 		
@@ -219,7 +232,7 @@ module dshot_controller #(
 						end
 					end
 				end else begin
-					if (counter_ff < t0h_ff) begin
+					if (counter_ff < t0h_ff - 1'b1) begin
 						dshot_out_nxt = 1'b1;
 					end else begin
 						if (counter_ff < bit_cyc_ff) begin
@@ -250,10 +263,11 @@ module dshot_controller #(
 				if (rx_sync2_ff == 1'b0) begin
 					state_nxt = RECEIVE;
 					counter_nxt = '0;
-					rx_bit_idx_nxt = 5'd20;
+					rx_bit_idx_nxt = 5'd19;
 				end else
 				
-				if (counter_ff > (bit_cyc_ff * 40)) begin
+				if (counter_ff > RX_TIMEOUT_CYCLES ) begin
+					rx_timeout_nxt = 1'b1;
 					state_nxt = IDLE;
 					counter_nxt = '0;
 				end
@@ -264,7 +278,7 @@ module dshot_controller #(
 				counter_nxt = counter_ff + 1'b1;
 
 				if (counter_ff == (rx_bit_cyc_ff >> 1)) begin
-					if (rx_bit_idx_ff == 5'd20) begin
+					if (rx_bit_idx_ff == 5'd19) begin
 						rx_prev_nxt = rx_sync2_ff;
 					end else begin
 						rx_shift_nxt = {rx_shift_ff[18:0], rx_sync2_ff ^ rx_prev_ff};
@@ -292,11 +306,13 @@ module dshot_controller #(
 				if (!(d3[4] | d2[4] | d1[4] | d0[4]) && (word[3:0] == (~(word[15:12] ^ word[11:8] ^ word[7:4]) & 4'hF))) begin
 					rx_data_nxt = word;
 					rx_valid_nxt = 1'b1;
-				end
+				end else begin
+					rx_crc_err_nxt = 1'b1;
+				end 
 				state_nxt = IDLE;
-				end
+			end
 			
-			default begin
+			default: begin
 				state_nxt = IDLE;
 			end	
 		endcase
