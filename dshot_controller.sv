@@ -64,21 +64,24 @@ module dshot_controller #(
 		return MHZ_CLOCK * us_timeout;
 	endfunction
 	
-	/// Timeout cycle registers
-	int rx_timeout_cycles_ff, rx_timeout_cycles_nxt;
+	int rx_timeout_cycles_ff, rx_timeout_cycles_nxt; 	// Timeout cycle registers
+	logic dshot_out_ff, dshot_out_nxt; 					// dshout signal output before tristate drivers
+	logic dshot_oe_ff, dshot_oe_nxt;    				// dshot signal output enable : 1 -> enabled, 0 -> hiZ
+	fsm_state_t state_ff, state_nxt;    				// fsm state registers
+	logic [3:0] bit_idx_ff, bit_idx_nxt;				// contains bit index; indicates current bit being sent out of the 16-bit frame
+	logic [4:0] rx_bit_idx_nxt, rx_bit_idx_ff;			// contains RX bit index; indicates current bit being read out of the 20-bit RX frame
+	logic [15:0] dshot_frame_ff, dshot_frame_nxt;		// stores DShot frame to be sent
+	logic bidirectional_en_ff, bidirectional_en_nxt;	// latched value of input bidirectional_en
 	
 	
+	// three-stage input synchronizer to capture data from dshot_io
+	logic rx_sync1_ff;
+	logic rx_sync2_ff;
+	logic rx_sync3_ff;
 	
-	logic dshot_out_ff, dshot_out_nxt;
-	logic dshot_oe_ff, dshot_oe_nxt;
-	fsm_state_t state_ff, state_nxt;
-	logic [3:0] bit_idx_ff, bit_idx_nxt;
-	logic [4:0] rx_bit_idx_nxt, rx_bit_idx_ff;
-	logic [15:0] dshot_frame_ff, dshot_frame_nxt;
-	logic bidirectional_en_ff, bidirectional_en_nxt;
+	logic [19:0] rx_shift_ff, rx_shift_nxt; //20-bit GCR received telemetry shift register
 	
-	logic rx_sync1_ff, rx_sync2_ff;
-	logic [19:0] rx_shift_ff, rx_shift_nxt;
+	
 	logic rx_prev_ff, rx_prev_nxt;
 	logic [15:0] rx_data_ff, rx_data_nxt;
 	logic rx_valid_ff, rx_valid_nxt;
@@ -169,6 +172,7 @@ module dshot_controller #(
 			bidirectional_en_ff <= 1'b0;
 			rx_sync1_ff <= 1'b1;
 			rx_sync2_ff <= 1'b1;
+			rx_sync3_ff <= 1'b1;
 			rx_shift_ff <= '0;
 			rx_prev_ff  <= 1'b0;
 			rx_data_ff  <= '0;
@@ -192,6 +196,7 @@ module dshot_controller #(
 
 			rx_sync1_ff <= dshot_io;   // in else branch
 			rx_sync2_ff <= rx_sync1_ff;
+			rx_sync3_ff <= rx_sync2_ff;
 			rx_shift_ff <= rx_shift_nxt;
 			rx_prev_ff  <= rx_prev_nxt;
 			rx_data_ff  <= rx_data_nxt;
@@ -292,7 +297,7 @@ module dshot_controller #(
 				dshot_oe_nxt = 1'b0;
 				counter_nxt = counter_ff + 1'b1;
 				
-				if (rx_sync2_ff == 1'b0) begin
+				if (rx_sync3_ff == 1'b0) begin
 					state_nxt = RECEIVE;
 					counter_nxt = '0;
 					rx_bit_idx_nxt = 5'd19;
@@ -311,10 +316,10 @@ module dshot_controller #(
 
 				if (counter_ff == (rx_bit_cyc_ff >> 1)) begin
 					if (rx_bit_idx_ff == 5'd19) begin
-						rx_prev_nxt = rx_sync2_ff;
+						rx_prev_nxt = rx_sync3_ff;
 					end else begin
-						rx_shift_nxt = {rx_shift_ff[18:0], rx_sync2_ff ^ rx_prev_ff};
-						rx_prev_nxt = rx_sync2_ff;
+						rx_shift_nxt = {rx_shift_ff[18:0], rx_sync3_ff ^ rx_prev_ff};
+						rx_prev_nxt = rx_sync3_ff;
 					end
 				end
 
