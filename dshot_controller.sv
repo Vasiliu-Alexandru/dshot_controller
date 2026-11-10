@@ -1,16 +1,19 @@
 /*https://verilogguide.readthedocs.io/en/latest/verilog/package.html
 https://nuttx.apache.org/docs/latest/os/drivers/character/timers/dshot.html
 */
+
 package dshot_pkg;
+
+	// DSHOT ESC communication protocol bitrates
     typedef enum logic [1:0] {
-        DSHOT_150  = 2'b00,
-        DSHOT_300  = 2'b01,
-        DSHOT_600  = 2'b10,
-        DSHOT_1200 = 2'b11
+        DSHOT_150  = 2'b00, // 150  kbps
+        DSHOT_300  = 2'b01, // 300  kbps
+        DSHOT_600  = 2'b10, // 600  kbps
+        DSHOT_1200 = 2'b11  // 1200 kbps
     } dshot_speed_t;
 endpackage
 
-import dshot_pkg::*;
+import dshot_pkg::*; //compilation-unit level import of package containing DSHOT bitrates
 
 module dshot_controller #(
     parameter int CLK_FREQ_HZ = 200_000_000 // Default clock frequency 200MHz
@@ -18,23 +21,24 @@ module dshot_controller #(
     input logic         clk,   // system clock
     input logic         rst_n, // asynchronous reset, active low
 	 
-	 // command interface
-	input dshot_speed_t dshot_speed,
-	input logic bidirectional_en,
-    input logic         tx_start,
-    input logic [10:0]  throttle,
-    input logic         req_telemetry,
+	// command interface
+	input dshot_speed_t dshot_speed, // Protocol speed; latched right after reset
+	input logic bidirectional_en,    // bidirectional communication enable; latched right after reset
+    input logic         tx_start,    // send a DShot frame
+    input logic [10:0]  throttle,    // 11-bit motor throttle value, 0 - 2047, values 0-47 are reserved
+    input logic         req_telemetry, // req_telemetry bit sent in DShot frame
 
     // physical bidirectional pin
     inout logic         dshot_io,
 
     // Telemetry Receive Interface
-    output logic [15:0] rx_data,
-    output logic        rx_valid,
-    output logic        busy,
-	output logic rx_crc_err, 
-	output logic rx_timeout
+    output logic [15:0] rx_data, // received data (includes eRPM) , only valid when rx_valid is asserted
+    output logic        rx_valid, // received data is valid
+    output logic        busy,	  // busy indicator flag
+	output logic rx_crc_err, 	  // indicates received data has a CRC error
+	output logic rx_timeout		  // indicates RX frame timeout
 );
+	// fsm states
 	typedef enum logic [2:0] {
 		GET_DSHOT_SPEED = 3'b000,
 		IDLE            = 3'b001,
@@ -44,9 +48,27 @@ module dshot_controller #(
 		DECODE = 3'b101
 	} fsm_state_t;
 	
-
-	localparam int RX_TIMEOUT_CYCLES = (longint'(CLK_FREQ_HZ) * 60) / 1_000_000;
-
+	localparam int MHZ_CLOCK = CLK_FREQ_HZ / 1_000_000; // clock frequency in MHz, compile-time constant
+	
+	
+	// function to get number of c.c. for a rx timeout to occur
+	function automatic int get_rx_timeout_cycles(input dshot_speed_t speed);
+		int us_timeout;
+		unique case (speed)
+			DSHOT_150:  us_timeout = 150;
+			DSHOT_300:  us_timeout = 80;
+			DSHOT_600:  us_timeout = 40;
+			DSHOT_1200: us_timeout = 25;
+			default:    us_timeout = 80;
+		endcase
+		return MHZ_CLOCK * us_timeout;
+	endfunction
+	
+	/// Timeout cycle registers
+	int rx_timeout_cycles_ff, rx_timeout_cycles_nxt;
+	
+	
+	
 	logic dshot_out_ff, dshot_out_nxt;
 	logic dshot_oe_ff, dshot_oe_nxt;
 	fsm_state_t state_ff, state_nxt;
@@ -130,6 +152,10 @@ module dshot_controller #(
 	
 	always_ff @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
+		
+			rx_timeout_cycles_ff <= MHZ_CLOCK * 150;
+			
+			
 			dshot_out_ff <= 1'b0;
 			dshot_oe_ff <= 1'b0;
 			state_ff <= GET_DSHOT_SPEED;
@@ -150,6 +176,7 @@ module dshot_controller #(
 			rx_bit_idx_ff <= '0;
 			rx_crc_err_ff <= 1'b0;
 			rx_timeout_ff <= 1'b0;
+			
 
 		end else begin
 			dshot_out_ff <= dshot_out_nxt;
@@ -173,10 +200,12 @@ module dshot_controller #(
 			bidirectional_en_ff <= bidirectional_en_nxt;
 			rx_crc_err_ff <= rx_crc_err_nxt;
 			rx_timeout_ff <= rx_timeout_nxt;
+			rx_timeout_cycles_ff <= rx_timeout_cycles_nxt;
 		end
 	end
 	
 	always_comb begin
+		// hold previous values
 		dshot_oe_nxt = dshot_oe_ff;
 		state_nxt = state_ff;
 		bit_idx_nxt = bit_idx_ff;
@@ -192,10 +221,12 @@ module dshot_controller #(
 		rx_shift_nxt = rx_shift_ff;
 		rx_prev_nxt = rx_prev_ff;
 		rx_data_nxt = rx_data_ff;
-		rx_valid_nxt = 1'b0;
+		
+		
+		rx_valid_nxt = 1'b0; 
 		rx_crc_err_nxt = 1'b0;
 		rx_timeout_nxt = 1'b0;
-		
+		rx_timeout_cycles_nxt = rx_timeout_cycles_ff;
 		case(state_ff)
 		
 			GET_DSHOT_SPEED: begin
@@ -205,6 +236,7 @@ module dshot_controller #(
 				t1h_nxt= CNT_W'((bit_cycles(dshot_speed) * 3) >> 2);
 				bidirectional_en_nxt = bidirectional_en;
 				state_nxt = IDLE;
+				rx_timeout_cycles_nxt = get_rx_timeout_cycles(dshot_speed);
 			end
 		
 		
@@ -266,7 +298,7 @@ module dshot_controller #(
 					rx_bit_idx_nxt = 5'd19;
 				end else
 				
-				if (counter_ff > RX_TIMEOUT_CYCLES ) begin
+				if (counter_ff > rx_timeout_cycles_ff ) begin
 					rx_timeout_nxt = 1'b1;
 					state_nxt = IDLE;
 					counter_nxt = '0;
@@ -319,3 +351,4 @@ module dshot_controller #(
 	end
 
 endmodule
+
