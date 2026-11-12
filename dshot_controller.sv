@@ -5,11 +5,12 @@ https://nuttx.apache.org/docs/latest/os/drivers/character/timers/dshot.html
 package dshot_pkg;
 
 	// DSHOT ESC communication protocol bitrates
-    typedef enum logic [1:0] {
-        DSHOT_150  = 2'b00, // 150  kbps
-        DSHOT_300  = 2'b01, // 300  kbps
-        DSHOT_600  = 2'b10, // 600  kbps
-        DSHOT_1200 = 2'b11  // 1200 kbps
+    typedef enum logic [2:0] {
+        DSHOT_150  = 3'b000, // 150  kbps
+        DSHOT_300  = 3'b001, // 300  kbps
+        DSHOT_600  = 3'b010, // 600  kbps
+        DSHOT_1200 = 3'b011,  // 1200 kbps
+		UNDEFINED  = 3'b100
     } dshot_speed_t;
 endpackage
 
@@ -140,7 +141,7 @@ module dshot_controller #(
 			DSHOT_1200: return int'((longint'(CLK_FREQ_HZ) *  835) / 1_000_000_000);
 		endcase
 	endfunction
-	
+ 
 	function automatic int rx_bit_cycles(dshot_speed_t s);
 		return (bit_cycles(s) * 4) / 5; // 1.25x faster baud rate (4/5 period)
 	endfunction
