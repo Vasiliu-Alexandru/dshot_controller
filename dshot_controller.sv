@@ -1,7 +1,6 @@
 /*https://verilogguide.readthedocs.io/en/latest/verilog/package.html
 https://nuttx.apache.org/docs/latest/os/drivers/character/timers/dshot.html
 */
-
 package dshot_pkg;
 
 	// DSHOT ESC communication protocol bitrates
@@ -15,6 +14,58 @@ package dshot_pkg;
 endpackage
 
 import dshot_pkg::*; //compilation-unit level import of package containing DSHOT bitrates
+
+module top_level (
+	input logic clk,
+	input logic rst_n,
+	inout logic dshot_io
+);
+	logic [12:0] counter;
+	logic [25:0] tick_cnt;
+	logic [2:0]  step;
+	logic [10:0] throttle_val;
+
+	always_ff @(posedge clk or negedge rst_n) begin
+		if (!rst_n) begin
+			counter  <= '0;
+			tick_cnt <= '0;
+			step     <= '0;
+		end else begin
+			counter  <= counter + 1'b1;
+			tick_cnt <= tick_cnt + 1'b1;
+			if (&tick_cnt)
+				step <= (step == 3'd6) ? 3'd0 : step + 1'b1;
+		end
+	end
+
+	always_comb begin
+		case (step)
+			3'd0:    throttle_val = 11'd0;
+			3'd1:    throttle_val = 11'd100;
+			3'd2:    throttle_val = 11'd100;
+			3'd3:    throttle_val = 11'd200;
+			3'd4:    throttle_val = 11'd110;
+			3'd5:    throttle_val = 11'd200;
+			default: throttle_val = 11'd100;
+		endcase
+	end
+
+	dshot_controller #(.CLK_FREQ_HZ(27_000_000)) u_dshot (
+		.clk(clk),
+		.rst_n(rst_n),
+		.dshot_speed(DSHOT_300),
+		.bidirectional_en(1'b0),
+		.tx_start(counter == 13'd8191),
+		.throttle(throttle_val),
+		.req_telemetry(throttle_val < 11'd48),
+		.dshot_io(dshot_io),
+		.rx_data(),
+		.rx_valid(),
+		.busy(),
+		.rx_crc_err(),
+		.rx_timeout()
+	);
+endmodule
 
 module dshot_controller #(
     parameter int CLK_FREQ_HZ = 200_000_000 // Default clock frequency 200MHz
@@ -153,7 +204,14 @@ module dshot_controller #(
 	logic [CNT_W-1:0] bit_cyc_ff, t0h_ff, t1h_ff, bit_cyc_nxt, t0h_nxt, t1h_nxt, rx_bit_cyc_ff, rx_bit_cyc_nxt;
 	logic [TIMEOUT_W-1:0] counter_ff, counter_nxt;
 	
-	
+	logic [4:0] d3, d2, d1, d0;
+logic [15:0] word;
+
+assign d3 = gcr_dec(rx_shift_ff[19:15]);
+assign d2 = gcr_dec(rx_shift_ff[14:10]);
+assign d1 = gcr_dec(rx_shift_ff[9:5]);
+assign d0 = gcr_dec(rx_shift_ff[4:0]);
+assign word = {d3[3:0], d2[3:0], d1[3:0], d0[3:0]};
 	always_ff @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
 		
@@ -334,13 +392,7 @@ module dshot_controller #(
 				end
 
 			DECODE: begin
-				logic [4:0] d3, d2, d1, d0;
-				logic [15:0] word;
-				d3 = gcr_dec(rx_shift_ff[19:15]);
-				d2 = gcr_dec(rx_shift_ff[14:10]);
-				d1= gcr_dec(rx_shift_ff[9:5]);
-				d0 = gcr_dec(rx_shift_ff[4:0]);
-				word = {d3[3:0], d2[3:0], d1[3:0], d0[3:0]};
+				
 				if (!(d3[4] | d2[4] | d1[4] | d0[4]) && (word[3:0] == (~(word[15:12] ^ word[11:8] ^ word[7:4]) & 4'hF))) begin
 					rx_data_nxt = word;
 					rx_valid_nxt = 1'b1;
